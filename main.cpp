@@ -15,7 +15,7 @@
  *    - Midpoint Circle     : sun disk rings
  *
  *  2D Transformations
- *    - Translation  : sun, clouds, walkers, walking cow
+ *    - Translation  : clouds, walkers, walking cow (sun is fixed for a natural sky anchor)
  *    - Rotation     : cow head/tail idle, rope swing, arm gestures
  *    - Scaling      : depth-based size for cows, people, stalls (perspective)
  *    - Reflection   : buyer / walker facing left (glScalef -1,1,1)
@@ -81,6 +81,12 @@ const float VANISH_X        = (float)WINDOW_WIDTH * 0.5f;
  * Sky is drawn only above this line so cattle rows never sit in the “blue gap”.
  */
 const float FIELD_TOP_Y        = 295.0f;
+/*
+ * Sun: upper-right, fixed screen position — intentionally never animated (no timer
+ * state, no glTranslate). Change only these constants to reposition; do not tie to sceneTime.
+ */
+const float SUN_DISK_CENTER_X  = 628.0f;
+const float SUN_DISK_CENTER_Y  = 528.0f;
 const float MARKET_FAR_Y       = (float)GROUND_Y + 82.0f;  /* distant row feet   */
 const float MARKET_NEAR_Y      = (float)GROUND_Y + 8.0f;   /* closest row feet   */
 
@@ -100,9 +106,7 @@ const float ANIMATION_SPEED_SCALE = 0.44f;
  * ============================================================ */
 /* Horizontal world position of the foreground cow led by villagers (loops when off-screen). */
 float foregroundLedCowOffsetX = -150.0f;
-/* Parallax: sun drifts slowly for a subtle time-of-day feel. */
-float sunHorizontalOffsetX    =    0.0f;
-/* Cloud layer scrolls at a different rate than the sun (depth illusion). */
+/* Cloud layer scrolls for parallax; sun stays fixed (natural distant light source). */
 float cloudLayerOffsetX       =    0.0f;
 /* Edge traders’ arm swing angle (degrees); used for bargaining / idle motion. */
 float edgeTraderArmAngleDegrees = 0.0f;
@@ -302,6 +306,70 @@ void drawSunlightSky()
         glVertex2i(WINDOW_WIDTH, WINDOW_HEIGHT);
         glVertex2i(0,            WINDOW_HEIGHT);
     glEnd();
+}
+
+/*
+ * Smooth sun disk: Gouraud-style radial fade (center bright → rim matches sky, alpha 0).
+ * Avoids hard “onion ring” edges from stacking opaque fans. Requires GL_BLEND.
+ */
+static void drawSunDiskFanRadialGradient(
+    float centerX, float centerY, float outerRadiusPixels, int segmentCount,
+    float centerRed, float centerGreen, float centerBlue,
+    float rimRed, float rimGreen, float rimBlue, float rimAlpha)
+{
+    glBegin(GL_TRIANGLE_FAN);
+    glColor4f(centerRed, centerGreen, centerBlue, 1.0f);
+    glVertex2f(centerX, centerY);
+    for (int segmentIndex = 0; segmentIndex <= segmentCount; segmentIndex++) {
+        float angleRadians = (float)segmentIndex * (2.0f * PI_VALUE / (float)segmentCount);
+        glColor4f(rimRed, rimGreen, rimBlue, rimAlpha);
+        glVertex2f(centerX + outerRadiusPixels * cosf(angleRadians),
+                   centerY + outerRadiusPixels * sinf(angleRadians));
+    }
+    glEnd();
+}
+
+/*
+ * Afternoon sun: slightly larger disk, colours like a clear-sky solar disk —
+ * warm yellow–gold (atmospheric scattering), bright yellow-white core, soft limb
+ * into sky. Static only: uses SUN_DISK_CENTER_* only, no time-based motion.
+ * Midpoint circle: light gold ring (lab showcase).
+ */
+void drawNaturalSun()
+{
+    const float centerX = SUN_DISK_CENTER_X;
+    const float centerY = SUN_DISK_CENTER_Y;
+    const int smoothSegments = 72;
+    /* Rim matches mid-sky from drawSunlightSky() so the glow fades into blue */
+    const float skyR = 0.38f, skyG = 0.64f, skyB = 0.93f;
+
+    /*
+     * Layer colours: real sunlight often reads as golden (Rayleigh scattering);
+     * core is brighter “paper white” yellow, not grey.
+     */
+    const float haloGoldR = 1.00f, haloGoldG = 0.90f, haloGoldB = 0.52f;
+    const float coronaGoldR = 1.00f, coronaGoldG = 0.84f, coronaGoldB = 0.38f;
+    const float coreBrightR = 1.00f, coreBrightG = 0.97f, coreBrightB = 0.72f;
+    const float coreRimR = 1.00f, coreRimG = 0.88f, coreRimB = 0.42f;
+
+    /* Outer airglow — a bit larger than before (~42 px) */
+    drawSunDiskFanRadialGradient(centerX, centerY, 42.0f, smoothSegments,
+                                 haloGoldR, haloGoldG, haloGoldB,
+                                 skyR, skyG, skyB, 0.0f);
+    /* Saturated gold corona */
+    drawSunDiskFanRadialGradient(centerX, centerY, 22.0f, smoothSegments,
+                                 coronaGoldR, coronaGoldG, coronaGoldB,
+                                 skyR, skyG, skyB, 0.0f);
+    /* Bright photosphere — small disc, reads as the “actual” sun surface */
+    drawSunDiskFanRadialGradient(centerX, centerY, 11.0f, smoothSegments,
+                                 coreBrightR, coreBrightG, coreBrightB,
+                                 coreRimR, coreRimG, coreRimB, 0.0f);
+
+    /* Midpoint ring: warm gold, matches corona (algorithm + subtle sparkle) */
+    glColor3f(1.00f, 0.86f, 0.40f);
+    glPointSize(1.15f);
+    midpointCircle((int)centerX, (int)centerY, 14);
+    glPointSize(1.0f);
 }
 
 /*
@@ -1024,37 +1092,21 @@ void display()
     /* ---- 1. Daylight sky ---- */
     drawSunlightSky();
 
-    /* ---- 2. Sun + Midpoint glow (neutral daylight, no red cast) ---- */
-    glPushMatrix();
-        glTranslatef(sunHorizontalOffsetX, 0.0f, 0.0f);
-        glColor3f(1.0f, 0.97f, 0.86f);
-        glBegin(GL_POLYGON);
-        for (int segmentIndex = 0; segmentIndex < 48; segmentIndex++) {
-            float angleRadians = segmentIndex * 2.0f * PI_VALUE / 48;
-            glVertex2f(620.0f + 34.0f*cosf(angleRadians), 515.0f + 34.0f*sinf(angleRadians));
-        }
-        glEnd();
-        glColor3f(0.96f, 0.93f, 0.72f);
-        glBegin(GL_LINE_LOOP);
-        for (int segmentIndex = 0; segmentIndex < 48; segmentIndex++) {
-            float angleRadians = segmentIndex * 2.0f * PI_VALUE / 48;
-            glVertex2f(620.0f + 46.0f*cosf(angleRadians), 515.0f + 46.0f*sinf(angleRadians));
-        }
-        glEnd();
-        glColor3f(0.92f, 0.90f, 0.78f);
-        glPointSize(2.0f);
-        midpointCircle(620, 515, 36);
-        midpointCircle(620, 515, 41);
-        glPointSize(1.0f);
-    glPopMatrix();
+    /* ---- 2. Sun: fixed position, layered warm colours + midpoint corona ---- */
+    drawNaturalSun();
 
-    /* ---- 3. Bright clouds (multiple layers / scales) ---- */
+    /*
+     * Clouds: only the left cloud uses horizontal parallax. Clouds near the sun
+     * (upper-right ~520–630) must stay fixed — if they slide with cloudLayerOffsetX,
+     * occlusion changes every frame and the sun *looks* like it moves even though
+     * SUN_DISK_CENTER_* never changes.
+     */
     glPushMatrix();
         glTranslatef(cloudLayerOffsetX * 0.8f, 0.0f, 0.0f);
         drawCloudBright(40.0f, 520.0f, 1.0f);
-        drawCloudBright(280.0f, 535.0f, 0.95f);
     glPopMatrix();
-    drawCloudBright(520.0f + cloudLayerOffsetX * 0.5f, 505.0f, 0.85f);
+    drawCloudBright(280.0f, 535.0f, 0.95f);
+    drawCloudBright(520.0f, 505.0f, 0.85f);
     drawCloudBright(160.0f + cloudLayerOffsetX * 0.35f, 488.0f, 0.65f);
 
     /* ---- 4. Ground + central path (land fills to FIELD_TOP_Y — no blue strip) ---- */
@@ -1207,11 +1259,10 @@ void timer(int /*value*/)
 
     sceneTimeSeconds += deltaTimeSeconds;
 
+    /* Sun is not updated here — remains fixed at SUN_DISK_CENTER_X / SUN_DISK_CENTER_Y. */
+
     foregroundLedCowOffsetX += 0.85f * ANIMATION_SPEED_SCALE;
     if (foregroundLedCowOffsetX > 960.0f) foregroundLedCowOffsetX = -220.0f;
-
-    sunHorizontalOffsetX += 0.045f * ANIMATION_SPEED_SCALE;
-    if (sunHorizontalOffsetX > 220.0f) sunHorizontalOffsetX = -220.0f;
 
     cloudLayerOffsetX += 0.06f * ANIMATION_SPEED_SCALE;
     if (cloudLayerOffsetX > 820.0f) cloudLayerOffsetX = -820.0f;
