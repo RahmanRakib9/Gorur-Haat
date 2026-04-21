@@ -1,4 +1,4 @@
-# Gorur Haat – Eid Cattle Market (CG Lab Project)
+# Gorur Haat, Computer Graphics Lab project
 
 This project was developed under **Computer Graphics Lab (CSE422)**.
 
